@@ -4,6 +4,7 @@ import os
 import usb.core
 
 dev = None
+commsize = 140
 debug = False
 
 def connect():
@@ -16,10 +17,35 @@ def connect():
     usb.control.set_configuration(dev, 0)
     usb.control.set_configuration(dev, 1)
 
+    GetComBufSize()
+
 def disconnect():
     global dev
     if dev != None:
         usb.util.dispose_resources(dev)
+
+def GetComBufSize():
+    # remember this value for our use as well
+    global commsize
+
+    ret = command(b'\x78\x11')
+    if len(ret) == 4:
+        buffsize = int.from_bytes(ret, 'big')
+        commsize = buffsize - 40;
+        return buffsize
+    return None
+
+def GetInfo():
+    # when called in bootloader will send back status code/error 0x27, but also 3 normal strings
+    bin = command(b'\x78\x12')
+    # 32bit int (string count), then array of strings null terminated/separated
+    return str(bin[4:-1], 'utf8').split('\0')
+
+def GetSerialNum():
+    info = GetInfo()
+    if info == None:
+        raise Exception('Unable to get device info')
+    return info[0]
 
 def GetBLInfo():
     #'2.41   Bootloader ' (null terminated)
@@ -50,7 +76,7 @@ def command(data):
     dev.ctrl_transfer(0x40, 0x97, (length >> 16), length & 0xffff, 0)
     dev.write(0x2, data)
 
-    data = dev.read(0x81, 100008, 1000)
+    data = dev.read(0x81, commsize, 1000)
 
     if len(data) >= 4 and data[2] == 0x33:
         if data[3] == 0x01:
