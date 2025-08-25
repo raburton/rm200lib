@@ -30,9 +30,8 @@ def GetComBufSize():
 
     ret = command(b'\x78\x11')
     if len(ret) == 4:
-        buffsize = int.from_bytes(ret, 'big')
-        commsize = buffsize - 40;
-        return buffsize
+        commsize = int.from_bytes(ret, 'big')
+        return commsize
     return None
 
 def GetInfo():
@@ -63,6 +62,15 @@ def GetChipId():
     bin = command(b'\x78\x07')
     return '0x' + bytes(bin).hex()
 
+def GetDeltaEParameter():
+    # also has a set method, function unknown, 5 little endian ints
+    bin = command(b'\x78\x37')
+    if len(bin) == 20:
+        return [int.from_bytes(bin[0:4], 'little'), int.from_bytes(bin[4:8], 'little'), int.from_bytes(bin[8:12], 'little'),
+                int.from_bytes(bin[12:16], 'little'), int.from_bytes(bin[16:20], 'little')]
+    else:
+        return None
+
 def FileDir():
     dat = command(b'\x77\x24')
     # 32bit int (string count), then array of strings null terminated/separated
@@ -90,6 +98,64 @@ def SetDeviceMode(mode):
     if (mode < 1 or mode > 6) and mode != 9:
         raise Exception('Mode must be 1=eGeneral, 2=eBatteryOnly, 3=eSync, 4=eRemote, 5=eTukan, 6=eBatteryPowered, 9=eMSD')
     return command_bool(b'\x78\x29' + bytes([mode]))
+
+# GenericCmd provides a whole load more functions
+# there are lots of "sub commands", most of which are unknown
+# this is a special case command that does its own usb, as repsonse
+# is different to the normal commands
+def Genericcommand(cmd, v1, v2, v3, v4, v5, v6, string, quiet = 0):
+    global dev
+    global debug
+
+    if dev is None:
+        raise Exception('Not connected. Call Connect() first.')
+
+    data = b'\x77\x17' + cmd.to_bytes(2, "big") + v1.to_bytes(4, "big") + v2.to_bytes(4, "big") + v3.to_bytes(4, "big") + \
+        v4.to_bytes(4, "big") + v5.to_bytes(4, "big") + v6.to_bytes(4, "big") + string.encode('utf8') + b'\0'
+
+    length = len(data)
+    dev.ctrl_transfer(0x40, 0x97, (length >> 16), length & 0xffff, 0)
+    dev.write(0x2, data)
+
+    data = dev.read(0x81, commsize, 1000)
+
+    # often returns a message
+    if len(data) > 30 and not quiet:
+        print(str(data[30:-1], 'utf8'))
+
+    if len(data) > 0 and data[2] == 0x33:
+        if data[3] == 0x01:
+            return True
+
+    return False
+
+# Changes the device serial number. Serial should be 10 digits long.
+# Regular models start with 0, QC with 2, cosmetic with 3
+# Causes a usb error and disconnect, but otherwise works fine.
+def SetSerialNum(serial):
+
+    length = len(serial)
+    if (length != 10):
+        raise Exception('Serial must be 10 digits long')
+
+    return Genericcommand(0x032a, 0x00001d7e, 0x000005de, 0, 0, 0, 0, serial)
+    #return rm.command_bool(b'\x00\x00\x1d\x7e \x00\x00\x05\xde \x00\x00\x00\x00 \x00\x00\x00\x00 \x00\x00\x00\x00 \x00\x00\x00\x00' +
+    #       serial.encode('utf8') + b'\0')
+
+# Backup the calib data to a file on the nand.
+# Two readable text formats, and one binary dump (most useful for backup)
+# Call this, then download the file from the nand.
+def BackupCalibData(mode):
+    if mode == 1:
+        mode = 0x0000
+    elif mode == 2:
+        mode = 0x0064
+    elif mode == 3:
+        mode = 0x1d7e
+    else:
+        raise Exception('Mode must be 1=text, 2=textcompat, 3=binary')
+
+    return Genericcommand(0x0167, 0x00bc614e, 0x00001fa9, mode, 0, 0, 0, '')
 
 def GetAperture():
     # returns 0=small, 1=medium, 2=large/auto
