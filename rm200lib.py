@@ -42,19 +42,37 @@ def UnlockExtendedCommands(password):
     # multiple passwords, why?
     # allows use of the commands with Extended in the name, and 8823 (GetMultiColorCmd(true))
     if password == None:
-        passord = '873gwe31xah1'
+        password = '873gwe31xah1'
     return command_bool(b"\x89\x00" + password.encode('utf8') + b'\0')
 
 def GetInfo():
-    # when called in bootloader will send back status code/error 0x27, but also 3 normal strings
-    bin = command(b'\x78\x12')
-    # 32bit int (string count), then array of strings null terminated/separated
-    return str(bin[4:-1], 'utf8').split('\0')
+    # info is: serial num, mfg date, hw rev?, total disk space, used space, free space
+    # special case, does own usb command as when called in bootloader it will send back
+    # status code/error 0x27 (bug?), BL onyl sends first 3 strings
+    global dev
+    global debug
+
+    if dev is None:
+        raise Exception('Not connected. Call Connect() first.')
+
+    dev.ctrl_transfer(0x40, 0x97, 0, 2, 0)
+    dev.write(0x2, b'\x78\x12')
+
+    data = dev.read(0x81, commsize, 1000)
+
+    if debug == True:
+        print('len: ' + str(len(data)) + ', data: ' + ' '.join([hex(x) for x in data]))
+
+    if len(data) >= 4 and data[2] == 0x33 and (data[3] == 0x01 or data[3] == 0x27):
+        # 32bit int (string count), then array of strings null terminated/separated
+        return str(data[8:-1], 'utf8').split('\0')
+
+    return None
 
 def GetSerialNum():
     info = GetInfo()
     if info == None:
-        raise Exception('Unable to get device info')
+        return None
     return info[0]
 
 # gets array of colours, first the selected and then all scanned (inc selected again)
@@ -102,17 +120,22 @@ def GetMultiColorCmd():
 def GetBLInfo():
     #'2.41   Bootloader ' (null terminated)
     bin = command(b'\x78\x2d')
+    if bin == None:
+        return None
     return str(bin[:-1], 'utf8')
 
 def GetFWInfo():
     #'2.16   RM200' (null terminated)
     #'2.16    RM200 Cosmetics' (null terminated)
-
     bin = command(b'\x77\x01')
+    if bin == None:
+        return None
     return str(bin[:-1], 'utf8')
 
 def GetChipId():
     bin = command(b'\x78\x07')
+    if bin == None:
+        return None
     return '0x' + bytes(bin).hex()
 
 def GetDeltaEParameter():
