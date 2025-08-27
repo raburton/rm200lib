@@ -24,6 +24,10 @@ def disconnect():
     if dev != None:
         usb.util.dispose_resources(dev)
 
+def SetDebug(enabled):
+    global debug
+    debug = enabled
+
 def GetComBufSize():
     # remember this value for our use as well
     global commsize
@@ -33,6 +37,13 @@ def GetComBufSize():
         commsize = int.from_bytes(ret, 'big')
         return commsize
     return None
+
+def UnlockExtendedCommands(password):
+    # multiple passwords, why?
+    # allows use of the commands with Extended in the name, and 8823 (GetMultiColorCmd(true))
+    if password == None:
+        passord = '873gwe31xah1'
+    return command_bool(b"\x89\x00" + password.encode('utf8') + b'\0')
 
 def GetInfo():
     # when called in bootloader will send back status code/error 0x27, but also 3 normal strings
@@ -45,6 +56,48 @@ def GetSerialNum():
     if info == None:
         raise Exception('Unable to get device info')
     return info[0]
+
+# gets array of colours, first the selected and then all scanned (inc selected again)
+# each colour is array of 5 strings: fandeck, colour, page, row, column
+def GetMultiColorCmd():
+    data = command(b"\x78\x23")
+
+    if data == None:
+        return None
+
+    pos = 0
+    colours = []
+
+    # unknown word (always? 00 01)
+    pos += 2
+    # colour count
+    #count = int.from_bytes(data[pos : pos + 2], "big")
+    pos += 2
+
+    while pos < len(data):
+        # unknown bytes (always? 00 00 00 00 00 00)
+        pos += 6
+
+        strings = []
+        for i in range(5):
+            # find utf16 null terminator
+            scan = pos
+            while scan < len(data)-1:
+                if data[scan] == 0 and data[scan+1] == 0:
+                    #print('scan = ' + str(scan) + 'data[scan] ' + str(data[scan]))
+                    break
+                scan += 2
+            strings.append(bytes(data[pos:scan]).decode('utf16'))
+            #print(bytes(data[pos:scan]).decode('utf16'))
+            pos = scan + 2
+
+        # unknown byte, first (selected) seems to be 0x02, rest 0x14
+        pos += 1
+
+        colours.append(strings)
+
+    return colours
+
 
 def GetBLInfo():
     #'2.41   Bootloader ' (null terminated)
@@ -118,6 +171,9 @@ def Genericcommand(cmd, v1, v2, v3, v4, v5, v6, string, quiet = 0):
     dev.write(0x2, data)
 
     data = dev.read(0x81, commsize, 1000)
+
+    if debug == True:
+        print('len: ' + str(len(data)) + ', data: ' + ' '.join([hex(x) for x in data]))
 
     # often returns a message
     if len(data) > 30 and not quiet:
@@ -229,6 +285,9 @@ def BLUploadWelcome(file):
 def BLEraseWelcome(file):
     return BLAction(6, 0)
 
+# get the current content of the screen, pixel data in RGB565, no headers
+def GetLcdData():
+    return command(b'\x78\x0e')
 
 def OpenFile(file, mode):
     if mode < 1 or mode > 2:
@@ -290,6 +349,67 @@ def DownloadFile(file):
 
     return True
 
+# save screenshot to bmp file
+def SaveScreenshot(file):
+    header = bytes([
+        0x42, 0x4d, 0x0a, 0x2f, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8a, 0x00, 0x00, 0x00, 0x7c, 0x00,
+        0x00, 0x00, 0xb0, 0x00, 0x00, 0x00, 0x24, 0xff, 0xff, 0xff, 0x01, 0x00, 0x10, 0x00, 0x03, 0x00,
+        0x00, 0x00, 0x80, 0x2e, 0x01, 0x00, 0x23, 0x2e, 0x00, 0x00, 0x23, 0x2e, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x00, 0x00, 0xe0, 0x07, 0x00, 0x00, 0x1f, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42, 0x47, 0x52, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    ])
+    body = GetLcdData()
+    if (body == None):
+        return False
+
+    with open(file, 'wb') as f:
+        f.write(header)
+        f.write(body)
+
+    return True
+
+def StartPreview():
+    return command_bool(b'\x78\x34\x01')
+
+def StopPreview():
+    return command_bool(b'\x78\x34\x00')
+
+# get current view image (must be in preview mode)
+# 2 byte width, 2 byte length, then pixel data in RGB565
+def GetPreview():
+    # only works while previewing (via button or command)
+    data = command(b'\x78\x16')
+    #if (data == None):
+    #    raise Exception('Nothing returned. Device not previewing?')
+    return data
+
+def SavePreview(file):
+    header = bytes([
+        0x42, 0x4d, 0x8a, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8a, 0x00, 0x00, 0x00, 0x7c, 0x00,
+        0x00, 0x00, 0xa0, 0x00, 0x00, 0x00, 0x60, 0xff, 0xff, 0xff, 0x01, 0x00, 0x10, 0x00, 0x03, 0x00,
+        0x00, 0x00, 0x00, 0xc8, 0x00, 0x00, 0x23, 0x2e, 0x00, 0x00, 0x23, 0x2e, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x00, 0x00, 0xe0, 0x07, 0x00, 0x00, 0x1f, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42, 0x47, 0x52, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    ])
+
+    body = GetPreview()
+    if (body == None):
+        return False
+
+    with open(file, 'wb') as f:
+        f.write(header)
+        # skip length and width and just assume 160x160
+        f.write(body[4:])
+
+    return True
 
 def command(data):
     global dev
@@ -298,19 +418,20 @@ def command(data):
     if dev is None:
         raise Exception('Not connected. Call Connect() first.')
 
-    ret = None
-
     length = len(data)
     dev.ctrl_transfer(0x40, 0x97, (length >> 16), length & 0xffff, 0)
     dev.write(0x2, data)
 
     data = dev.read(0x81, commsize, 1000)
 
+    if debug == True:
+        print('len: ' + str(len(data)) + ', data: ' + ' '.join([hex(x) for x in data]))
+
     if len(data) >= 4 and data[2] == 0x33:
         if data[3] == 0x01:
-            ret = data[4:]
+            return data[4:]
 
-    return ret
+    return None
 
 def command_bool(data):
     global dev
@@ -323,6 +444,9 @@ def command_bool(data):
     dev.write(0x2, data)
 
     data = dev.read(0x81, commsize, 1000)
+
+    if debug == True:
+        print('len: ' + str(len(data)) + ', data: ' + ' '.join([hex(x) for x in data]))
 
     if len(data) >= 4 and data[2] == 0x33:
         if data[3] == 0x01:
