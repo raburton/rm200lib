@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
+# Licensed under AGPL 3.0 https://www.gnu.org/licenses/agpl-3.0.en.html
+# richardaburton@gmail.com
 
 import os
+import struct
 import usb.core
 
 dev = None
@@ -23,6 +26,7 @@ def disconnect():
     global dev
     if dev != None:
         usb.util.dispose_resources(dev)
+        dev = None
 
 def SetDebug(enabled):
     global debug
@@ -116,7 +120,6 @@ def GetMultiColorCmd():
 
     return colours
 
-
 def GetBLInfo():
     #'2.41   Bootloader ' (null terminated)
     bin = command(b'\x78\x2d')
@@ -179,7 +182,7 @@ def SetDeviceMode(mode):
 # there are lots of "sub commands", most of which are unknown
 # this is a special case command that does its own usb, as repsonse
 # is different to the normal commands
-def Genericcommand(cmd, v1, v2, v3, v4, v5, v6, string, quiet = 0):
+def GenericCmd(cmd, v1, v2, v3, v4, v5, v6, string, quiet = 0):
     global dev
     global debug
 
@@ -217,7 +220,7 @@ def SetSerialNum(serial):
     if (length != 10):
         raise Exception('Serial must be 10 digits long')
 
-    return Genericcommand(0x032a, 0x00001d7e, 0x000005de, 0, 0, 0, 0, serial)
+    return GenericCmd(0x032a, 0x00001d7e, 0x000005de, 0, 0, 0, 0, serial)
     #return rm.command_bool(b'\x00\x00\x1d\x7e \x00\x00\x05\xde \x00\x00\x00\x00 \x00\x00\x00\x00 \x00\x00\x00\x00 \x00\x00\x00\x00' +
     #       serial.encode('utf8') + b'\0')
 
@@ -234,7 +237,7 @@ def BackupCalibData(mode):
     else:
         raise Exception('Mode must be 1=text, 2=textcompat, 3=binary')
 
-    return Genericcommand(0x0167, 0x00bc614e, 0x00001fa9, mode, 0, 0, 0, '')
+    return GenericCmd(0x0167, 0x00bc614e, 0x00001fa9, mode, 0, 0, 0, '')
 
 def GetAperture():
     # returns 0=small, 1=medium, 2=large/auto
@@ -401,13 +404,10 @@ def StartPreview():
 def StopPreview():
     return command_bool(b'\x78\x34\x00')
 
-# get current view image (must be in preview mode)
-# 2 byte width, 2 byte length, then pixel data in RGB565
+# get current preview image (device must be in preview mode, by button or command)
+# returns 2 byte width, 2 byte length, then pixel data in RGB565
 def GetPreview():
-    # only works while previewing (via button or command)
     data = command(b'\x78\x16')
-    #if (data == None):
-    #    raise Exception('Nothing returned. Device not previewing?')
     return data
 
 def SavePreview(file):
@@ -429,8 +429,97 @@ def SavePreview(file):
 
     with open(file, 'wb') as f:
         f.write(header)
-        # skip length and width and just assume 160x160
+        # skip length and width, we assume 160x160
         f.write(body[4:])
+
+    return True
+
+def MeasureTemperature():
+    dat = command(b'\x78\x06')
+    if dat == None or len(dat) != 4:
+        return None
+    return struct.unpack('>f', dat)[0]
+
+def GetTime():
+    dat = command(b'\x97\x0a')
+    if dat == None or len(dat) != 7:
+        return None
+    return f'{int.from_bytes(dat[0:2], 'big')}/{dat[2]}/{dat[3]} {dat[4]}:{dat[5]}:{dat[6]}'
+
+def GenerateKeyboardEvent(key):
+    if key < 1 or key > 8:
+        raise Exception('Key must be 1=centre, 2=up, 3=down, 4=left, 5=right, 6=preview(release), 7=preview(hold), 8=capture')
+    # must be previewing before can use capture
+    return command_bool(b'\x78\x0f' + key.to_bytes(2, 'big'))
+
+# get the number of saved colour records
+def GetNumberOfEntries():
+    dat = command(b'\x78\x19')
+    if dat == None or len(dat) != 2:
+        return None
+    return int.from_bytes(dat, 'big')
+
+# fetches the data of a saved sample
+# numbered from 0 to GetNumberOfEntries-1
+# returns array of 11 strings: date/time, fandeck, colour code, page, row, column, colour name, ??, page code, ??, ??
+#   and 1 byte array containing image in BGR565 (not RGB565)
+def GetRecordData(num):
+    data = command(b'\x78\x20' +  num.to_bytes(2, 'big'))
+    if data == None:
+        return None
+
+    pos = 0
+    record = []
+
+    # unknown word, record type? always? 00 01
+    pos += 2
+    # date and time
+    record.append(f'{int.from_bytes(data[2:4], 'big')}/{data[4]}/{data[5]} {data[6]}:{data[7]}:{data[8]}')
+    pos += 7
+
+    # unknown bytes (always? 00 00 00 00 00 00)
+    pos += 6
+
+    for i in range(10):
+        # find utf16 null terminator
+        scan = pos
+        while scan < len(data)-1:
+            if data[scan] == 0 and data[scan+1] == 0:
+                #print('scan = ' + str(scan) + 'data[scan] ' + str(data[scan]))
+                break
+            scan += 2
+        record.append(bytes(data[pos:scan]).decode('utf16'))
+        #print(bytes(data[pos:scan]).decode('utf16'))
+        pos = scan + 2
+
+    # unknown word, record type? always? 00 02
+    pos += 2
+
+    record.append(data[pos:])
+
+    return record
+
+# save the image from a saved sample record
+# pass the record returned by GetRecordData and a filename to write to
+def SaveRecordImage(record, file):
+    header = bytes([
+        0x42, 0x4d, 0xaa, 0x4e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8a, 0x00, 0x00, 0x00, 0x7c, 0x00,
+        0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x9c, 0xff, 0xff, 0xff, 0x01, 0x00, 0x10, 0x00, 0x03, 0x00,
+        0x00, 0x00, 0x20, 0x4e, 0x00, 0x00, 0x13, 0x0b, 0x00, 0x00, 0x13, 0x0b, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00, 0xe0, 0x07, 0x00, 0x00, 0x00, 0xf8,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42, 0x47, 0x52, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    ])
+
+    if (len(record) != 12 or record[11] == None):
+        return False
+
+    with open(file, 'wb') as f:
+        f.write(header)
+        f.write(record[11])
 
     return True
 
