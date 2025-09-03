@@ -280,7 +280,7 @@ def BLUpload(file, action):
             return False
         offset += chunk_size
 
-    print('Fnished upload, comitting...')
+    print('Finshed upload, comitting...')
 
     return BLAction(action, offset)
 
@@ -522,6 +522,55 @@ def SaveRecordImage(record, file):
         f.write(record[11])
 
     return True
+
+def GetFandecks():
+    data = command(b'\x78\x21')
+    if data == None:
+        return None
+
+    pos = 0
+    fandecks = []
+
+    # unknown bytes (always? 00 01)
+    pos += 2
+    # fandeck count
+    pos += 2
+
+    while pos < len(data):
+        fields = []
+        for i in range(8):
+
+            # find utf16 null terminator
+            scan = pos
+            while scan < len(data)-1:
+                if data[scan] == 0 and data[scan+1] == 0:
+                    #print('scan = ' + str(scan) + 'data[scan] ' + str(data[scan]))
+                    break
+                scan += 2
+            fields.append(bytes(data[pos:scan]).decode('utf16'))
+            pos = scan + 2
+
+            # after first string is a byte indicating 0=disabled, 1=enabled, 2=priority
+            if i == 0:
+                fields.append(data[pos])
+                pos += 1
+
+        fandecks.append(fields)
+
+        # unknown bytes (variable content) size?
+        fields.append(int.from_bytes(data[pos:pos+4], 'big'))
+        pos += 4
+
+    return fandecks
+
+def SetFandeckActive(name, state):
+    if state < 0 or state > 2:
+        raise Exception('State must be 0=disabled, 1=enabled, 2=priority')
+    return command_bool(b'\x78\x22' + name.encode('utf-16le') + b'\0\0' + bytes([state]))
+
+def DeleteFandeck(name):
+    # need to reboot afterwards
+    return command_bool(b'\x78\x32' + name.encode('utf-16le') + b'\0\0')
 
 def command(data):
     global dev
