@@ -178,6 +178,16 @@ def SetDeviceMode(mode):
         raise Exception('Mode must be 1=eGeneral, 2=eBatteryOnly, 3=eSync, 4=eRemote, 5=eTukan, 6=eBatteryPowered, 9=eMSD')
     return command_bool(b'\x78\x29' + bytes([mode]))
 
+# returns array containing int percentage???, float voltage, int mode (0=charged, 2=charging, maybe 1=discharging?)
+def GetBatteryState():
+    data = command(b'\x79\x05')
+    if data == None or len(data) != 6:
+        return None
+    state = [data[0]]
+    state.append(struct.unpack('>f', data[1:5])[0])
+    state.append(data[5])
+    return state
+
 # GenericCmd provides a whole load more functions
 # there are lots of "sub commands", most of which are unknown
 # this is a special case command that does its own usb, as repsonse
@@ -324,6 +334,9 @@ def OpenFile(file, mode):
 def FileRead():
     return command(b"\x77\x22")
 
+def FileWrite(chunk, length):
+    return command(b'\x77\x23' + length.to_bytes(4, "big") + chunk)
+
 def CloseFile(file):
     return command_bool(b'\x77\x21')
 
@@ -344,10 +357,10 @@ def UploadFile(file):
         offset = offset + chunk_size
 
         chunk_len = len(chunk)
-        if chunk_len == 0:  # does firmware upload need a final zero?
+        if chunk_len == 0:
             break
 
-        ret = command(b'\x77\x23' + chunk_len.to_bytes(4, "big") + chunk)
+        ret = FileWrite(chunk, chunk_len);
         if ret is None:
             break
 
@@ -398,6 +411,15 @@ def SaveScreenshot(file):
 
     return True
 
+# briefly display a picture on the screen
+# needs raw RBG565 data 176 x -220 pixels
+def Display565Image(file):
+    with open('lcd.dat', 'rb') as f:
+        data = f.read()
+    if len(data) != 77440:
+        raise Exception('invalid RBG565 data, must be 77440 bytes')
+    return command_bool(command(b'\x79\x03' + data))
+
 def StartPreview():
     return command_bool(b'\x78\x34\x01')
 
@@ -440,17 +462,38 @@ def MeasureTemperature():
         return None
     return struct.unpack('>f', dat)[0]
 
+# gets the time as an array of values: year, month, day, hours, mins, secs
 def GetTime():
     dat = command(b'\x97\x0a')
     if dat == None or len(dat) != 7:
         return None
-    return f'{int.from_bytes(dat[0:2], 'big')}/{dat[2]}/{dat[3]} {dat[4]}:{dat[5]}:{dat[6]}'
+    return [int.from_bytes(dat[0:2]), dat[2], dat[3], dat[4], dat[5], dat[6]]
+
+# utility function to get date as a formatted string
+def GetTimeString():
+    dat = GetTime()
+    if dat == None:
+        return None
+    return f'{dat[0]}/{dat[1]}/{dat[2]} {dat[3]}:{dat[4]}:{dat[5]}'
+
+def SetTime(year, month, day, hours, mins, secs):
+    return command_bool(b'\x79\x04' + year.to_bytes(2, 'big') + bytes([month]) + bytes([day]) +
+                        bytes([hours]) + bytes([mins]) + bytes([secs]))
 
 def GenerateKeyboardEvent(key):
     if key < 1 or key > 8:
         raise Exception('Key must be 1=centre, 2=up, 3=down, 4=left, 5=right, 6=preview(release), 7=preview(hold), 8=capture')
     # must be previewing before can use capture
     return command_bool(b'\x78\x0f' + key.to_bytes(2, 'big'))
+
+# returns bitmask of current pressed keys
+# 0x1=up, 0x2=down, 0x4=left, 0x8=right, 0x10=centre, 0x20=???, 0x40=???, 0x80=power, 0x100=???
+# no preview or capture (return error)
+def GetKeyCode():
+    dat = command(b'\x97\x09')
+    if dat == None or len(dat) != 2:
+        return None
+    return int.from_bytes(dat, 'big')
 
 # get the number of saved colour records
 def GetNumberOfEntries():
@@ -571,6 +614,20 @@ def SetFandeckActive(name, state):
 def DeleteFandeck(name):
     # need to reboot afterwards
     return command_bool(b'\x78\x32' + name.encode('utf-16le') + b'\0\0')
+
+# number of second till device need calibtating again
+def GetTimeToCalibExpired():
+    dat = command(b'\x78\x2e')
+    if dat == None or len(dat) != 4:
+        return None
+    return int.from_bytes(dat, 'big')
+
+# returns 0=not calibrated, 1=calibrated
+def GetCalibrationState():
+    dat = command(b'\x78\x28')
+    if dat == None or len(dat) != 1:
+        return None
+    return dat[0]
 
 def command(data):
     global dev
