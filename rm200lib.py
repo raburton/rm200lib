@@ -335,19 +335,16 @@ def FileRead():
     return command(b"\x77\x22")
 
 def FileWrite(chunk, length):
-    return command(b'\x77\x23' + length.to_bytes(4, "big") + chunk)
+    return command_bool(b'\x77\x23' + length.to_bytes(4, "big") + chunk)
 
 def CloseFile(file):
     return command_bool(b'\x77\x21')
 
-def UploadFile(file):
+# upload data to a file on the device
+def PutFile(file, data):
     if not OpenFile(file, 2):
-        raise Exception('Unable to open file')
+        return False
 
-    with open(file, "rb") as f:
-        data = f.read()
-
-    ret = None
     chunk_size = commsize - 40
     offset = 0
     file_len = len(data)
@@ -360,33 +357,113 @@ def UploadFile(file):
         if chunk_len == 0:
             break
 
-        ret = FileWrite(chunk, chunk_len);
-        if ret is None:
+        if not FileWrite(chunk, chunk_len);
             break
 
     if not CloseFile(file):
-        raise Exception('Unable to close file')
+        return False
 
-def DownloadFile(file):
+    return True;
+
+# upload a file from current dir, to same name on device
+def UploadFile(file):
+    with open(file, "rb") as f:
+        data = f.read()
+    return PutFile(file, data)
+
+# fetch a file, returns the file contents
+def FetchFile(file):
     if not OpenFile(file, 1):
-        #raise Exception('Unable to open file')
+        return None
+
+    data = b''
+    while True:
+        chunk = FileRead()
+        if chunk == None or len(chunk) < 4:
+            raise Exception('Bad read')
+
+        chunk_len = int.from_bytes(chunk[:4], "big")
+        if chunk_len == 0:
+            break
+        data += chunk[4:]
+
+    if not CloseFile(file):
+        return False
+
+    return data
+
+# download a file, save to same named file on pc
+def DownloadFile(file):
+    data = FetchFile(file)
+    if data == None:
         return False
 
     with open(file, "wb") as f:
-        while True:
-            chunk = FileRead()
-            if chunk == None or len(chunk) < 4:
-                raise Exception('Bad read')
-
-            chunk_len = int.from_bytes(chunk[:4], "big")
-            if chunk_len == 0:
-                break
-            f.write(chunk[4:])
-
-    if not CloseFile(file):
-        raise Exception('Unable to close file')
+        f.write(data)
 
     return True
+
+# returns array of file details stored in Versions.dat
+# each of which is an array: type, id, name, sku, description, version, size, filename
+# type is 1=bootloader, 2=firmwire, 6=welcome_screen, 7=fandeck, 12=measure_screen, 13=start_sound
+# 14=end_sound, 15=multi_sound, 19=device_config, 20=inversion_matrix
+def ReadVersionsDotDat():
+    data = FetchFile('Versions.dat')
+    if data == None:
+        return None
+
+    pos = 0
+    files = []
+
+    while pos < len(data):
+        fields = []
+        # skip record length
+        pos += 4
+
+        for i in range(8):
+            match i:
+                case 0:
+                    # file type
+                    fields.append(int.from_bytes(data[pos:pos+2], 'little'))
+                    pos += 2
+                case 6:
+                    # file size
+                    fields.append(int.from_bytes(data[pos:pos+4], 'little'))
+                    pos += 4
+                case _:
+                    # strings
+                    length = int.from_bytes(data[pos:pos+2], 'little')
+                    pos += 2
+                    fields.append(data[pos:pos+length].decode('utf8'))
+                    pos += length
+        files.append(fields)
+
+    return files
+
+# see ReadVersionsDotDat for data format
+def WriteVersionsDotDat(files):
+    data = b''
+    for f in range(len(files)):
+        file = b''
+        # record length
+        file += (6 + 12 + len(files[f][1].encode('utf8')) + len(files[f][2].encode('utf8')) + len(files[f][3].encode('utf8')) +
+                 len(files[f][4].encode('utf8')) + len(files[f][5].encode('utf8')) + len(files[f][7].encode('utf8'))).to_bytes(4, 'little')
+
+        for i in range(8):
+            match i:
+                case 0:
+                    # file type
+                    file += files[f][i].to_bytes(2, 'little')
+                case 6:
+                    # file size
+                    file += files[f][i].to_bytes(4, 'little')
+                case _:
+                    # strings
+                    file += len(files[f][i].encode('utf8')).to_bytes(2, 'little')
+                    file += files[f][i].encode('utf8')
+        data += file
+
+    return PutFile('Versions.dat', data)
 
 # save screenshot to bmp file
 def SaveScreenshot(file):
