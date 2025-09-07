@@ -26,3 +26,13 @@ rm.DownloadFile('filename') # save file to same name in current dir
 
 rm.Disconnect()
 ```
+
+The bootloader only uses a small set of commands (those named myself, which start with BL, only work in the bootloader):
+- GetComBufSize
+- GetInfo (doesn't include nand info, when in bootloader)
+- GetFwInfo (gets bootloader name/version, when in bootloader)
+- GetChipId
+- GetDeviceMode
+- Reboot
+- BLUploadChunk
+- BLAction
