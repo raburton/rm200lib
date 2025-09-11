@@ -381,7 +381,7 @@ def PutFile(file, data):
         if chunk_len == 0:
             break
 
-        if not FileWrite(chunk, chunk_len);
+        if not FileWrite(chunk, chunk_len):
             break
 
     if not CloseFile(file):
@@ -723,7 +723,8 @@ def SetFandeckActive(name, state):
 def DeleteFandeck(name):
     return CommandBool(b'\x78\x32' + name.encode('utf-16le') + b'\0\0')
 
-# number of second till device need calibtating again
+# number of second till device needs calibrating again
+# negative number means calibration is past due
 def GetTimeToCalibExpired():
     data = CommandData(b'\x78\x2e')
     if data == None or len(data) != 4:
@@ -767,6 +768,7 @@ def CommandData(data):
 # Will throw exception if not connected
 def CommandBool(data):
     global dev
+    global debug
 
     if dev is None:
         raise Exception('Not connected. Call Connect() first.')
