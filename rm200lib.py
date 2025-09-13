@@ -302,7 +302,7 @@ def BLUpload(file, action):
         ret = BLUploadChunk(offset, chunk)
         if ret == False:
             return False
-        offset += chunk_size
+        offset += chunk_len
 
     print('Finshed upload, comitting...')
 
